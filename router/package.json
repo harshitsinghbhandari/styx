@@ -1,16 +1,14 @@
 {
-  "name": "@styx/kernel",
+  "name": "@styx/router",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "api": "tsx src/api/start.ts",
-    "seed": "tsx ../scripts/seed.ts"
+    "local": "tsx src/local.ts",
+    "test": "vitest run"
   },
   "dependencies": {
-    "fastify": "^5.11.3",
     "pg": "^8.13.1"
   },
   "devDependencies": {
