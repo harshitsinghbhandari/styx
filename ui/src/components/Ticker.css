@@ -1,0 +1,73 @@
+.ticker {
+  height: 100%;
+  background: var(--bg-0);
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.ticker-empty {
+  padding: var(--space-3);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ticker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ticker-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-4);
+  font-size: 12px;
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+  cursor: pointer;
+}
+
+.ticker-row:hover {
+  background: var(--bg-2);
+}
+
+.ticker-time {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.ticker-id {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.ticker-transition {
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.ticker-arrow {
+  color: var(--text-muted);
+}
+
+.ticker-event {
+  color: var(--text-primary);
+  flex: 0 0 auto;
+}
+
+.ticker-actor {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.ticker-reason {
+  color: var(--text-muted);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticker-row.kind-created .ticker-event { color: var(--primary); }
+.ticker-row.kind-transition .ticker-event { color: var(--text-primary); }
+.ticker-row.kind-linked .ticker-event { color: var(--accent); }

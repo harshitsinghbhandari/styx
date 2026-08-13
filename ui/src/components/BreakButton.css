@@ -1,0 +1,38 @@
+.break-button {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--danger);
+  background: var(--danger-fill);
+  color: var(--danger);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: background-color 120ms ease, color 120ms ease, transform 80ms ease;
+}
+
+.break-button:not(:disabled):hover {
+  background: var(--danger);
+  color: var(--bg-0);
+}
+
+.break-button:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+.break-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.break-button.flashed {
+  background: var(--danger);
+  color: var(--bg-0);
+  animation: styx-flash 2000ms ease-out 1;
+}
+
+@keyframes styx-flash {
+  0%, 20% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--danger) 50%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

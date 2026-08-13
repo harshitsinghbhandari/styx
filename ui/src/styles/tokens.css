@@ -1,0 +1,93 @@
+/*
+ * Seed-palette theming, opencode's approach (research/opencode-webui.md
+ * section 4.3): define a handful of semantic seed colors, derive
+ * everything else (tints, borders, alpha overlays) from them instead of
+ * hand-authoring a scale per color per surface.
+ *
+ * opencode's actual implementation is a ~300-line JS resolver
+ * (ui/src/theme/color.ts + resolve.ts) that converts seeds to OKLCH and
+ * walks hue/lightness/chroma shifts to build 12-step Radix-style scales.
+ * That was pre-approved to port verbatim if faster; it was not faster
+ * here. color-mix(in oklch, ...) is a native CSS function (Chrome 111+,
+ * Safari 16.2+, Firefox 113+, and the Chromium Playwright bundles for the
+ * screenshot step) that does the same seed-to-scale expansion declaratively:
+ * mix each seed toward black/white/transparent by a percentage and the
+ * browser does the OKLCH interpolation. Ladder rung 3 (native platform
+ * feature) beats rung 6 (hand-rolled resolver) for a one-page console.
+ * ponytail: no 12-step Radix ramp, no light theme (task is dark-first,
+ * projector demo, no toggle built). Upgrade path if that changes: port
+ * opencode's resolve.ts for real per-step control.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- seeds: the only hand-picked colors in the app ---- */
+  --seed-bg: oklch(16% 0.01 260);
+  --seed-ink: oklch(92% 0.01 260);
+  --seed-primary: oklch(70% 0.14 250);
+  --seed-accent: oklch(76% 0.13 300);
+  --seed-active: oklch(72% 0.17 152);
+  --seed-at-risk: oklch(78% 0.15 80);
+  --seed-broken: oklch(64% 0.22 25);
+  --seed-fulfilled: oklch(70% 0.03 240);
+  --seed-revoked: oklch(58% 0.02 260);
+  --seed-draft: oklch(45% 0.01 260);
+
+  /* ---- derived surfaces (mixed from the bg/ink seeds) ---- */
+  --bg-0: oklch(11% 0.008 260);
+  --bg-1: var(--seed-bg);
+  --bg-2: color-mix(in oklch, var(--seed-bg) 82%, white);
+  --bg-3: color-mix(in oklch, var(--seed-bg) 68%, white);
+  --border: color-mix(in oklch, var(--seed-ink) 18%, var(--bg-1));
+  --border-strong: color-mix(in oklch, var(--seed-ink) 32%, var(--bg-1));
+
+  --text-primary: var(--seed-ink);
+  --text-secondary: color-mix(in oklch, var(--seed-ink) 70%, var(--bg-1));
+  --text-muted: color-mix(in oklch, var(--seed-ink) 45%, var(--bg-1));
+
+  --accent: var(--seed-accent);
+  --primary: var(--seed-primary);
+
+  /* ---- status colors, each with a text tone, a dim border tone, and a
+     translucent fill for chips/node backgrounds, all derived from one seed ---- */
+  --status-active: var(--seed-active);
+  --status-active-fill: color-mix(in oklch, var(--seed-active) 16%, transparent);
+  --status-active-border: color-mix(in oklch, var(--seed-active) 55%, transparent);
+
+  --status-at_risk: var(--seed-at-risk);
+  --status-at_risk-fill: color-mix(in oklch, var(--seed-at-risk) 18%, transparent);
+  --status-at_risk-border: color-mix(in oklch, var(--seed-at-risk) 60%, transparent);
+
+  --status-broken: var(--seed-broken);
+  --status-broken-fill: color-mix(in oklch, var(--seed-broken) 18%, transparent);
+  --status-broken-border: color-mix(in oklch, var(--seed-broken) 60%, transparent);
+
+  --status-fulfilled: var(--seed-fulfilled);
+  --status-fulfilled-fill: color-mix(in oklch, var(--seed-fulfilled) 14%, transparent);
+  --status-fulfilled-border: color-mix(in oklch, var(--seed-fulfilled) 45%, transparent);
+
+  --status-revoked: var(--seed-revoked);
+  --status-revoked-fill: color-mix(in oklch, var(--seed-revoked) 14%, transparent);
+  --status-revoked-border: color-mix(in oklch, var(--seed-revoked) 45%, transparent);
+
+  --status-draft: var(--seed-draft);
+  --status-draft-fill: color-mix(in oklch, var(--seed-draft) 12%, transparent);
+  --status-draft-border: color-mix(in oklch, var(--seed-draft) 35%, transparent);
+
+  --danger: var(--seed-broken);
+  --danger-fill: color-mix(in oklch, var(--seed-broken) 22%, transparent);
+
+  /* ---- type + spacing ---- */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+}

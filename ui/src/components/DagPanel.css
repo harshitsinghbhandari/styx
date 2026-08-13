@@ -1,0 +1,84 @@
+.dag-panel {
+  height: 100%;
+  width: 100%;
+  background: var(--bg-1);
+}
+
+.dag-panel-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.commitment-node {
+  min-width: 220px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-primary);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.commitment-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 35%, transparent);
+}
+
+.commitment-node.dimmed {
+  opacity: 0.68;
+}
+
+.commitment-node-kind {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.commitment-node-label {
+  font-size: 12px;
+  margin: var(--space-1) 0;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commitment-node-status {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+}
+
+.status-active { border-color: var(--status-active-border); background: color-mix(in oklch, var(--status-active-fill) 100%, var(--bg-2)); }
+.status-active .commitment-node-status { color: var(--status-active); background: var(--status-active-fill); }
+
+.status-at_risk { border-color: var(--status-at_risk-border); background: color-mix(in oklch, var(--status-at_risk-fill) 100%, var(--bg-2)); }
+.status-at_risk .commitment-node-status { color: var(--status-at_risk); background: var(--status-at_risk-fill); }
+
+.status-broken { border-color: var(--status-broken-border); background: color-mix(in oklch, var(--status-broken-fill) 100%, var(--bg-2)); }
+.status-broken .commitment-node-status { color: var(--status-broken); background: var(--status-broken-fill); }
+
+.status-fulfilled { border-color: var(--status-fulfilled-border); }
+.status-fulfilled .commitment-node-status { color: var(--status-fulfilled); background: var(--status-fulfilled-fill); }
+
+.status-revoked { border-color: var(--status-revoked-border); }
+.status-revoked .commitment-node-status { color: var(--status-revoked); background: var(--status-revoked-fill); }
+
+.status-draft { border-color: var(--status-draft-border); }
+.status-draft .commitment-node-status { color: var(--status-draft); background: var(--status-draft-fill); }
+
+@keyframes styx-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 10px color-mix(in oklch, var(--accent) 0%, transparent); }
+}
+
+.react-flow__node.pulse .commitment-node {
+  animation: styx-pulse 900ms ease-out 1;
+}

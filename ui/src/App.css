@@ -1,0 +1,20 @@
+.app {
+  display: grid;
+  grid-template-rows: 48px 1fr 180px;
+  height: 100vh;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  min-height: 0;
+}
+
+.app-dag {
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-ticker {
+  min-height: 0;
+}

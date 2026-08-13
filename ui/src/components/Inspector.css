@@ -1,0 +1,160 @@
+.inspector {
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.inspector-empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.inspector-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.inspector-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.status-pill {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.status-pill.status-active { color: var(--status-active); background: var(--status-active-fill); }
+.status-pill.status-at_risk { color: var(--status-at_risk); background: var(--status-at_risk-fill); }
+.status-pill.status-broken { color: var(--status-broken); background: var(--status-broken-fill); }
+.status-pill.status-fulfilled { color: var(--status-fulfilled); background: var(--status-fulfilled-fill); }
+.status-pill.status-revoked { color: var(--status-revoked); background: var(--status-revoked-fill); }
+.status-pill.status-draft { color: var(--status-draft); background: var(--status-draft-fill); }
+
+.inspector-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: 12px;
+}
+
+.inspector-facts dt {
+  color: var(--text-muted);
+}
+
+.inspector-facts dd {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.inspector-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.inspector-section h4 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-1);
+}
+
+.inspector-terms {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  font-size: 11px;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.inspector-deps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.dep-chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px var(--space-2);
+  margin: 0 var(--space-1) var(--space-1) 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.dep-chip.status-active { color: var(--status-active); border-color: var(--status-active-border); }
+.dep-chip.status-at_risk { color: var(--status-at_risk); border-color: var(--status-at_risk-border); }
+.dep-chip.status-broken { color: var(--status-broken); border-color: var(--status-broken-border); }
+.dep-chip.status-fulfilled { color: var(--status-fulfilled); border-color: var(--status-fulfilled-border); }
+.dep-chip.status-revoked { color: var(--status-revoked); border-color: var(--status-revoked-border); }
+.dep-chip.status-draft { color: var(--status-draft); border-color: var(--status-draft-border); }
+
+.inspector-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.inspector-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 12px;
+}
+
+.inspector-timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  border-left: 2px solid var(--border-strong);
+  padding-left: var(--space-2);
+}
+
+.inspector-timeline-time {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.inspector-timeline-type {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.inspector-timeline-transition {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.inspector-timeline-reason {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11px;
+}

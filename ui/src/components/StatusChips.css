@@ -1,0 +1,40 @@
+.status-chips {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+
+.status-chip-count {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.status-chip-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.status-chip.status-active { border-color: var(--status-active-border); }
+.status-chip.status-active .status-chip-count { color: var(--status-active); }
+
+.status-chip.status-at_risk { border-color: var(--status-at_risk-border); }
+.status-chip.status-at_risk .status-chip-count { color: var(--status-at_risk); }
+
+.status-chip.status-broken { border-color: var(--status-broken-border); }
+.status-chip.status-broken .status-chip-count { color: var(--status-broken); }
+
+.status-chip.status-fulfilled { border-color: var(--status-fulfilled-border); }
+.status-chip.status-fulfilled .status-chip-count { color: var(--status-fulfilled); }
+
+.status-chip.status-revoked { border-color: var(--status-revoked-border); }
+.status-chip.status-revoked .status-chip-count { color: var(--status-revoked); }
