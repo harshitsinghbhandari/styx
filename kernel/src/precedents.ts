@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import { pool as defaultPool } from './db/pool.js';
+import { titanEmbed } from './embedders/titan.js';
 
 // v1-spec 9.2's ConflictContext is the natural-language conflict summary an
 // agent hands the store; the embedder is the only thing that reads it.
@@ -90,4 +91,7 @@ export class CockroachPrecedentStore implements PrecedentStore {
   }
 }
 
-export const precedentStore = new CockroachPrecedentStore();
+// EMBEDDER=titan swaps in Bedrock Titan Text Embeddings V2; unset (the
+// default, and every existing test/local run) keeps the deterministic stub.
+const defaultEmbedder: Embedder = process.env.EMBEDDER === 'titan' ? titanEmbed : stubEmbed;
+export const precedentStore = new CockroachPrecedentStore(defaultPool, defaultEmbedder);
