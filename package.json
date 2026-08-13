@@ -3,7 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "kernel"
+    "kernel",
+    "router",
+    "runner",
+    "agent",
+    "ui"
   ],
   "scripts": {
     "test:kernel": "npm run test --workspace=kernel"
