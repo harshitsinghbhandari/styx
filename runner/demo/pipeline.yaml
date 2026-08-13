@@ -1,0 +1,22 @@
+name: styx-demo
+stages:
+  - id: migrate
+    run: "echo 'running schema migration' && sleep 0.2 && true"
+    on_success: [build-api, lint]
+
+  - id: build-api
+    run: "echo 'building API endpoints' && sleep 0.3 && true"
+    needs: [migrate]
+    on_success: [deploy]
+
+  - id: lint
+    run: "echo 'linting' && sleep 0.1 && false"
+    needs: [migrate]
+    on_failure: notify-lint-failure
+
+  - id: deploy
+    run: "echo 'deploying' && sleep 0.1 && true"
+    needs: [build-api]
+
+  - id: notify-lint-failure
+    run: "echo 'lint failed, would notify here' && true"
