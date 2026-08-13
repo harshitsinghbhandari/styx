@@ -26,6 +26,7 @@ export interface NewPrecedent {
 export interface PrecedentStore {
   findSimilar(situation: ConflictContext, limit: number): Promise<Precedent[]>;
   record(p: NewPrecedent): Promise<void>;
+  list(limit: number, offset: number): Promise<Precedent[]>;
 }
 
 export type Embedder = (text: string) => Promise<number[]>;
@@ -86,6 +87,18 @@ export class CockroachPrecedentStore implements PrecedentStore {
        ORDER BY embedding <-> $1::vector
        LIMIT $2`,
       [toVectorLiteral(embedding), limit],
+    );
+    return rows;
+  }
+
+  /** Newest first, unrelated to similarity search: the console's browse view, not the repair-agent lookup path. */
+  async list(limit: number, offset: number): Promise<Precedent[]> {
+    const { rows } = await this.pool.query<Precedent>(
+      `SELECT id, situation, resolution, outcome, source_event, created_at
+       FROM precedents
+       ORDER BY created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset],
     );
     return rows;
   }

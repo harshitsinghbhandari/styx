@@ -276,6 +276,135 @@ describe('precedents route', () => {
   });
 });
 
+describe('agents routes', () => {
+  it('lists agents without key hashes', async () => {
+    const res = await fetch(`${baseUrl}/v1/agents`, { headers: authHeaders(agents.alice.key) });
+    expect(res.status).toBe(200);
+    const list = await res.json();
+    expect(Array.isArray(list)).toBe(true);
+    const names = list.map((a: { name: string }) => a.name).sort();
+    expect(names).toEqual(['alice', 'bob', 'carol']);
+    for (const a of list) {
+      expect(a).toHaveProperty('id');
+      expect(a).toHaveProperty('name');
+      expect(a).toHaveProperty('kind');
+      expect(a).not.toHaveProperty('api_key_hash');
+    }
+  });
+
+  it('gets a single agent by id', async () => {
+    const res = await fetch(`${baseUrl}/v1/agents/${agents.alice.id}`, { headers: authHeaders(agents.alice.key) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ id: agents.alice.id, name: 'alice', kind: 'buyer' });
+    expect(body).not.toHaveProperty('api_key_hash');
+  });
+
+  it('404s for an unknown agent id', async () => {
+    const res = await fetch(`${baseUrl}/v1/agents/${randomUUID()}`, { headers: authHeaders(agents.alice.key) });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('graph dependency_type', () => {
+  it('includes dependency_type on edges', async () => {
+    async function activePromise(deliver: string): Promise<{ id: string; version: number }> {
+      const createRes = await fetch(`${baseUrl}/v1/commitments`, {
+        method: 'POST',
+        headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({
+          debtorAgentId: agents.alice.id,
+          creditorAgentId: agents.bob.id,
+          terms: { deliver, deadline: '2099-01-01T00:00:00Z' },
+        }),
+      });
+      const created = await createRes.json();
+      const activateRes = await fetch(`${baseUrl}/v1/commitments/${created.commitment.id}/transitions`, {
+        method: 'POST',
+        headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ action: 'activate', expectedVersion: 1 }),
+      });
+      const activated = await activateRes.json();
+      return { id: activated.commitment.id, version: activated.commitment.version };
+    }
+
+    const p101 = await activePromise('schema migration');
+    const p102 = await activePromise('API endpoints');
+
+    await fetch(`${baseUrl}/v1/commitments/${p102.id}/dependencies`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ dependsOnId: p101.id, dependencyType: 'requires' }),
+    });
+
+    const graphRes = await fetch(`${baseUrl}/v1/commitments/${p102.id}/graph`, {
+      headers: authHeaders(agents.alice.key),
+    });
+    expect(graphRes.status).toBe(200);
+    const graph = await graphRes.json();
+    const edge = graph.edges.find((e: { from: string; to: string }) => e.from === p102.id && e.to === p101.id);
+    expect(edge).toMatchObject({ dependency_type: 'requires' });
+  });
+});
+
+describe('precedents list', () => {
+  it('paginates newest first', async () => {
+    const situationA = `list-test-a-${randomUUID()}`;
+    const situationB = `list-test-b-${randomUUID()}`;
+    await fetch(`${baseUrl}/v1/precedents`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ situation: situationA, resolution: 'first' }),
+    });
+    await fetch(`${baseUrl}/v1/precedents`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ situation: situationB, resolution: 'second' }),
+    });
+
+    const res = await fetch(`${baseUrl}/v1/precedents?limit=1`, { headers: authHeaders(agents.alice.key) });
+    expect(res.status).toBe(200);
+    const page = await res.json();
+    expect(page).toHaveLength(1);
+    expect(page[0].situation).toBe(situationB);
+  });
+});
+
+describe('PUBLIC_READ mode', () => {
+  it('leaves GET routes and mutations exactly as before when unset', async () => {
+    const res = await fetch(`${baseUrl}/v1/agents`);
+    expect(res.status).toBe(401);
+  });
+
+  it('allows anonymous GETs but still requires a bearer key for mutations when PUBLIC_READ=true', async () => {
+    process.env.PUBLIC_READ = 'true';
+    const publicApp = buildApp(pool);
+    await publicApp.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const address = publicApp.server.address();
+      if (typeof address !== 'object' || address === null) throw new Error('server did not bind');
+      const publicBaseUrl = `http://127.0.0.1:${address.port}`;
+
+      const getRes = await fetch(`${publicBaseUrl}/v1/agents`);
+      expect(getRes.status).toBe(200);
+
+      const postRes = await fetch(`${publicBaseUrl}/v1/commitments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({
+          debtorAgentId: agents.alice.id,
+          creditorAgentId: agents.carol.id,
+          terms: { deliver: 'widget', deadline: '2026-12-01T00:00:00Z' },
+        }),
+      });
+      expect(postRes.status).toBe(401);
+    } finally {
+      delete process.env.PUBLIC_READ;
+      await publicApp.close();
+    }
+  });
+});
+
 describe('SSE', () => {
   it('delivers a transition within 2s', async () => {
     const createRes = await fetch(`${baseUrl}/v1/commitments`, {

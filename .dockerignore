@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+*.log
+coverage
+.styx-runs
+.styx-agents
+.styx-agents-scenes
+ui/docs

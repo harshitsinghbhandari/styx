@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Provisions Styx's cloud layer: SSM secrets, the styx-lambda-exec inline
-# policy, four Lambda functions (router, admin-sql, seed, e2e), the
-# router's public endpoint, and the commitment_events changefeed. Re-run
+# policy, five Lambda functions (router, admin-sql, seed, e2e, scene), the
+# router's public endpoint, the commitment_events changefeed, and the
+# styx-console Fargate deploy (ECR, ECS cluster/service, ALB). Re-run
 # safely at any point; every step checks for its own prior work first.
 #
-# Prereqs: AWS_PROFILE=styx configured, Docker not required (esbuild only),
-# node_modules installed at the repo root (npm install), and the cloud
-# DATABASE_URL available at ~/.styx-cloud.env (DATABASE_URL=...) the first
-# time this runs (later runs read it back out of SSM instead).
+# Prereqs: AWS_PROFILE=styx configured, node_modules installed at the repo
+# root (npm install), and the cloud DATABASE_URL available at
+# ~/.styx-cloud.env (DATABASE_URL=...) the first time this runs (later runs
+# read it back out of SSM instead). Docker (with buildx) is required from
+# section 6 onward, to build and push the styx-console image.
 #
 # CockroachDB Cloud cluster reference (created out of band, not by this
 # script): styx-main-cluster, Basic tier, AWS us-east-1, host
@@ -115,6 +117,7 @@ bundle_and_deploy styx-router "$ROOT/router/src/lambda.ts" "$ROOT/router" "lambd
 bundle_and_deploy styx-admin-sql "$ROOT/scripts/lambda/admin-sql/index.ts" "$ROOT/scripts/lambda/admin-sql" "index.handler" 60
 bundle_and_deploy styx-seed "$ROOT/scripts/lambda/seed/index.ts" "$ROOT/scripts/lambda/seed" "index.handler" 30
 bundle_and_deploy styx-e2e "$ROOT/scripts/lambda/e2e/index.ts" "$ROOT/scripts/lambda/e2e" "index.handler" 30
+bundle_and_deploy styx-scene "$ROOT/scripts/lambda/scene/index.ts" "$ROOT/scripts/lambda/scene" "index.handler" 30
 
 # --- 4. Public endpoint for styx-router ------------------------------------
 # A Function URL is created (the hackathon-standard path) but this AWS
@@ -204,5 +207,172 @@ else
 fi
 
 rm -f /tmp/styx-rangefeed*.json /tmp/styx-showjobs*.json /tmp/styx-createfeed*.json
+
+# --- 6. styx-console: ECS execution role -----------------------------------
+ECS_EXEC_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/styx-ecs-exec"
+if aws iam get-role --role-name styx-ecs-exec >/dev/null 2>&1; then
+  log "iam role styx-ecs-exec already exists"
+else
+  cat > /tmp/styx-ecs-trust.json <<'EOF'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+EOF
+  aws iam create-role --role-name styx-ecs-exec --assume-role-policy-document file:///tmp/styx-ecs-trust.json >/dev/null
+  aws iam wait role-exists --role-name styx-ecs-exec
+  log "iam role styx-ecs-exec created"
+fi
+# AttachRolePolicy is itself idempotent (no error re-attaching the same policy).
+aws iam attach-role-policy --role-name styx-ecs-exec \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy >/dev/null
+ECS_EXEC_POLICY=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid": "SsmStyxParams", "Effect": "Allow", "Action": ["ssm:GetParameter", "ssm:GetParameters"], "Resource": "arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter/styx/*"},
+    {"Sid": "KmsDecryptForSsm", "Effect": "Allow", "Action": "kms:Decrypt", "Resource": "${KMS_KEY_ARN}"}
+  ]
+}
+EOF
+)
+echo "$ECS_EXEC_POLICY" > /tmp/styx-ecs-exec-inline.json
+aws iam put-role-policy --role-name styx-ecs-exec --policy-name styx-ecs-ssm --policy-document file:///tmp/styx-ecs-exec-inline.json >/dev/null
+log "iam styx-ecs-exec ssm/kms inline policy applied"
+
+# --- 7. styx-console: ECR repo, build, push --------------------------------
+if aws ecr describe-repositories --repository-names styx-console >/dev/null 2>&1; then
+  log "ecr repo styx-console already exists"
+else
+  aws ecr create-repository --repository-name styx-console --image-scanning-configuration scanOnPush=true >/dev/null
+  log "ecr repo styx-console created"
+fi
+ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/styx-console"
+
+log "building styx-console image (linux/amd64) and pushing to $ECR_URI"
+aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_URI" >/dev/null
+IMAGE_TAG="$(date -u +%Y%m%dT%H%M%SZ)"
+docker buildx build --platform linux/amd64 -t "$ECR_URI:$IMAGE_TAG" -t "$ECR_URI:latest" --load "$ROOT" >/dev/null
+docker push "$ECR_URI:$IMAGE_TAG" >/dev/null
+docker push "$ECR_URI:latest" >/dev/null
+log "styx-console image pushed: $ECR_URI:$IMAGE_TAG"
+
+# --- 8. styx-console: cluster, security groups, ALB, target group ----------
+if aws ecs describe-clusters --clusters styx --query 'clusters[?status==`ACTIVE`]' --output text | grep -q styx; then
+  log "ecs cluster styx already exists"
+else
+  aws ecs create-cluster --cluster-name styx >/dev/null
+  log "ecs cluster styx created"
+fi
+
+VPC_ID="$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
+SUBNET_IDS="$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[].SubnetId' --output text | tr '\t' ',')"
+
+ALB_SG_ID="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=styx-alb-sg" "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[0].GroupId' --output text)"
+if [ "$ALB_SG_ID" = "None" ] || [ -z "$ALB_SG_ID" ]; then
+  ALB_SG_ID="$(aws ec2 create-security-group --group-name styx-alb-sg --description "styx ALB: public 80/443" --vpc-id "$VPC_ID" --query 'GroupId' --output text)"
+  aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0 >/dev/null
+  aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 443 --cidr 0.0.0.0/0 >/dev/null
+  log "security group styx-alb-sg created: $ALB_SG_ID"
+else
+  log "security group styx-alb-sg already exists: $ALB_SG_ID"
+fi
+
+TASK_SG_ID="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=styx-console-sg" "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[0].GroupId' --output text)"
+if [ "$TASK_SG_ID" = "None" ] || [ -z "$TASK_SG_ID" ]; then
+  TASK_SG_ID="$(aws ec2 create-security-group --group-name styx-console-sg --description "styx-console Fargate task: 8080 from the ALB only" --vpc-id "$VPC_ID" --query 'GroupId' --output text)"
+  aws ec2 authorize-security-group-ingress --group-id "$TASK_SG_ID" --protocol tcp --port 8080 --source-group "$ALB_SG_ID" >/dev/null
+  log "security group styx-console-sg created: $TASK_SG_ID"
+else
+  log "security group styx-console-sg already exists: $TASK_SG_ID"
+fi
+
+ALB_ARN="$(aws elbv2 describe-load-balancers --names styx-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")"
+if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
+  ALB_ARN="$(aws elbv2 create-load-balancer --name styx-alb --type application --scheme internet-facing \
+    --subnets $(echo "$SUBNET_IDS" | tr ',' ' ') --security-groups "$ALB_SG_ID" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
+  log "alb styx-alb created: $ALB_ARN"
+else
+  log "alb styx-alb already exists: $ALB_ARN"
+fi
+
+TG_ARN="$(aws elbv2 describe-target-groups --names styx-console-tg --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")"
+if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
+  TG_ARN="$(aws elbv2 create-target-group --name styx-console-tg --protocol HTTP --port 8080 --vpc-id "$VPC_ID" \
+    --target-type ip --health-check-path /v1/health --health-check-interval-seconds 15 \
+    --healthy-threshold-count 2 --unhealthy-threshold-count 3 \
+    --query 'TargetGroups[0].TargetGroupArn' --output text)"
+  log "target group styx-console-tg created: $TG_ARN"
+else
+  log "target group styx-console-tg already exists: $TG_ARN"
+fi
+
+LISTENER_ARN="$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'Listeners[?Port==`80`].ListenerArn | [0]' --output text 2>/dev/null || echo "")"
+if [ -z "$LISTENER_ARN" ] || [ "$LISTENER_ARN" = "None" ]; then
+  aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
+    --default-actions "Type=forward,TargetGroupArn=$TG_ARN" >/dev/null
+  log "alb listener :80 created"
+else
+  log "alb listener :80 already exists"
+fi
+
+aws logs create-log-group --log-group-name /ecs/styx-console >/dev/null 2>&1 || true
+
+# --- 9. styx-console: task definition + service ----------------------------
+DATABASE_URL_PARAM_ARN="arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter/styx/database-url"
+TASK_DEF=$(cat <<EOF
+{
+  "family": "styx-console",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "$ECS_EXEC_ROLE_ARN",
+  "runtimePlatform": {"cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX"},
+  "containerDefinitions": [
+    {
+      "name": "styx-console",
+      "image": "$ECR_URI:$IMAGE_TAG",
+      "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
+      "environment": [
+        {"name": "PUBLIC_READ", "value": "true"},
+        {"name": "PORT", "value": "8080"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL", "valueFrom": "$DATABASE_URL_PARAM_ARN"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/styx-console",
+          "awslogs-region": "$AWS_REGION",
+          "awslogs-stream-prefix": "styx-console"
+        }
+      }
+    }
+  ]
+}
+EOF
+)
+echo "$TASK_DEF" > /tmp/styx-console-taskdef.json
+aws ecs register-task-definition --cli-input-json file:///tmp/styx-console-taskdef.json >/dev/null
+log "task definition styx-console registered (image tag $IMAGE_TAG)"
+
+SERVICE_STATUS="$(aws ecs describe-services --cluster styx --services styx-console --query 'services[0].status' --output text 2>/dev/null || echo "")"
+if [ "$SERVICE_STATUS" = "ACTIVE" ]; then
+  aws ecs update-service --cluster styx --service styx-console --task-definition styx-console --desired-count 1 >/dev/null
+  log "ecs service styx-console updated to latest task definition"
+else
+  aws ecs create-service --cluster styx --service-name styx-console --task-definition styx-console \
+    --desired-count 1 --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$TASK_SG_ID],assignPublicIp=ENABLED}" \
+    --load-balancers "targetGroupArn=$TG_ARN,containerName=styx-console,containerPort=8080" >/dev/null
+  log "ecs service styx-console created"
+fi
+
+log "waiting for styx-console service to reach steady state (can take a few minutes on first deploy)"
+aws ecs wait services-stable --cluster styx --services styx-console
+ALB_DNS="$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query 'LoadBalancers[0].DNSName' --output text)"
+log "styx-console is live: http://$ALB_DNS/"
+
+rm -f /tmp/styx-ecs-trust.json /tmp/styx-ecs-exec-inline.json /tmp/styx-console-taskdef.json
 
 log "provisioning complete"

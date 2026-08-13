@@ -132,6 +132,18 @@ export function registerRoutes(app: FastifyInstance, pool: Pool): void {
     reply.send(commitment);
   });
 
+  app.get('/v1/agents', async (_request, reply) => {
+    const { rows } = await pool.query('SELECT id, name, kind FROM agents ORDER BY name');
+    reply.send(rows);
+  });
+
+  app.get('/v1/agents/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { rows } = await pool.query('SELECT id, name, kind FROM agents WHERE id = $1', [id]);
+    if (rows.length === 0) throw new NotFound(`agent ${id}`);
+    reply.send(rows[0]);
+  });
+
   app.get('/v1/agents/:id/obligations', async (request, reply) => {
     const { id } = request.params as { id: string };
     reply.send(await getObligations(id, pool));
@@ -147,6 +159,13 @@ export function registerRoutes(app: FastifyInstance, pool: Pool): void {
   app.get('/v1/commitments/:id/history', async (request, reply) => {
     const { id } = request.params as { id: string };
     reply.send(await getHistory(id, pool));
+  });
+
+  app.get('/v1/precedents', async (request, reply) => {
+    const query = request.query as { limit?: string; offset?: string };
+    const limit = Math.min(Math.max(Number(query.limit) || 20, 1), 100);
+    const offset = Math.max(Number(query.offset) || 0, 0);
+    reply.send(await precedentStore.list(limit, offset));
   });
 
   app.post('/v1/precedents/search', async (request, reply) => {
