@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { createPromise, reserveResource, linkDependency, getCommitment, getObligations, getHistory } from '../kernel.js';
 import { transitionCommitment } from '../transition.js';
+import { repairCommitment } from '../repair.js';
 import { precedentStore } from '../precedents.js';
 import { buildGraph } from './graph.js';
 import { NotFound, BadRequest } from './errors.js';
@@ -88,6 +89,27 @@ export function registerRoutes(app: FastifyInstance, pool: Pool): void {
     reply.code(200).send({ ...result, replayed });
   });
 
+  // Agent-authenticated (a repair agent calls this once the target has some
+  // dependency edge pointing at an ACTIVE commitment -- either a brand-new
+  // replacement it just linked via POST .../dependencies with
+  // dependencyType 'replaces', or its original 'requires' dependency
+  // having healed on its own, see kernel/src/repair.ts), but the transition
+  // itself runs as the kernel actor (actorId null) per v1-spec: repair is
+  // a kernel-initiated edge, not a debtor/creditor one. The calling agent
+  // is recorded in the transition reason, not as actor.
+  app.post('/v1/commitments/:id/repair', async (request, reply) => {
+    const idempotencyKey = requireIdempotencyKey(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { reason?: string } | undefined;
+    const replayed = await alreadyRecorded(pool, idempotencyKey);
+    const reason = body?.reason ?? `repair requested by ${request.agent!.name}`;
+    const result = await repairCommitment(
+      { commitmentId: id, actorContext: { reason }, idempotencyKey },
+      pool,
+    );
+    reply.code(200).send({ ...result, replayed });
+  });
+
   app.post('/v1/commitments/:id/dependencies', async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { dependsOnId: string; dependencyType?: string };
@@ -133,5 +155,17 @@ export function registerRoutes(app: FastifyInstance, pool: Pool): void {
       throw new BadRequest('situation is required');
     }
     reply.send(await precedentStore.findSimilar(body.situation, body.limit ?? 5));
+  });
+
+  app.post('/v1/precedents', async (request, reply) => {
+    const body = request.body as { situation: string; resolution: string; outcome?: Record<string, unknown> };
+    if (typeof body.situation !== 'string' || body.situation.length === 0) {
+      throw new BadRequest('situation is required');
+    }
+    if (typeof body.resolution !== 'string' || body.resolution.length === 0) {
+      throw new BadRequest('resolution is required');
+    }
+    await precedentStore.record({ situation: body.situation, resolution: body.resolution, outcome: body.outcome ?? {} });
+    reply.code(201).send({ recorded: true });
   });
 }

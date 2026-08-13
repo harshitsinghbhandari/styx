@@ -20,11 +20,34 @@ describe('definition: validation', () => {
     expect(validateDefinition(def)).toEqual({ ok: true, errors: [] });
   });
 
-  it('rejects agent stages with the Day 3 message', () => {
+  it('accepts a valid agent stage', () => {
+    const def: PipelineDef = { name: 'x', stages: [{ id: 'a', agent: { agentName: 'worker-1', mission: 'do the thing' } }] };
+    expect(validateDefinition(def)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('rejects an agent stage missing agentName or mission', () => {
     const def: PipelineDef = { name: 'x', stages: [{ id: 'a', agent: { model: 'x' } } as any] };
     const result = validateDefinition(def);
     expect(result.ok).toBe(false);
-    expect(result.errors[0]).toContain('agent stages arrive on Day 3');
+    expect(result.errors.some((e) => e.includes("requires 'agent.agentName'"))).toBe(true);
+    expect(result.errors.some((e) => e.includes("requires 'agent.mission'"))).toBe(true);
+  });
+
+  it('rejects a stage declaring both run and agent', () => {
+    const def: PipelineDef = {
+      name: 'x',
+      stages: [{ id: 'a', run: 'true', agent: { agentName: 'worker-1', mission: 'x' } }],
+    };
+    const result = validateDefinition(def);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('exactly one executor'))).toBe(true);
+  });
+
+  it('rejects a stage with neither run nor agent', () => {
+    const def: PipelineDef = { name: 'x', stages: [{ id: 'a' }] };
+    const result = validateDefinition(def);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes("requires 'run' or 'agent'"))).toBe(true);
   });
 
   it('rejects an edge referencing an unknown stage', () => {

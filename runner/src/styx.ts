@@ -51,18 +51,32 @@ function deadlineFor(stage: StageDef, runStartedAt: string): string {
   return new Date(base + spanMs).toISOString();
 }
 
+/** Resolves a fleet member's kernel agent id by name; the agent must already exist (agent/src/fleet.ts registers its roster on boot). */
+export async function resolveAgentId(pool: Pool, name: string): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>('SELECT id FROM agents WHERE name = $1', [name]);
+  if (rows.length === 0) {
+    throw new Error(`unknown agent: ${name}`);
+  }
+  return rows[0].id;
+}
+
+export interface AgentMission {
+  ownerAgentId: string;
+  /** URL the agent POSTs its done/fail signal to; set only for agent stages once the run has a callback server. */
+  callback?: string;
+  /** Absolute dir the agent must write its declared `produces` artifact into; set only for agent stages. */
+  outputDir?: string;
+}
+
 /**
  * Create (or, on replay, fetch) the stage's promise commitment and activate
- * it. Day 2 has no distinct owning agents per stage (agent executor is Day
- * 3), so the runner agent is both debtor and creditor of its own stage
- * promises: it is simultaneously the party that owes the stage's delivery
- * (today, by literally running the command itself) and the party the
- * delivery is owed to. This also happens to be what makes a single actor
- * id legal for every transition role the commitment ever needs (activate
- * and fulfill require 'debtor', revoke requires 'creditor').
- * ponytail: single-identity debtor/creditor is a Day 2 stand-in; Day 3's
- * agent executor gives each stage a real owning agent as debtor, runner
- * stays creditor.
+ * it. Command stages (mission omitted) keep the Day 2 shape: the runner
+ * agent is both debtor and creditor of its own stage promise, since it
+ * runs the command itself. Agent stages give the mission's owning agent
+ * the debtor role -- it is the party that owes the stage's delivery -- and
+ * embed the mission (what to do, where to report, where to write the
+ * declared artifact) in terms so the owning agent discovers it purely by
+ * reading its obligations, no direct engine-to-agent call needed.
  */
 export async function createStageCommitment(
   pool: Pool,
@@ -70,12 +84,26 @@ export async function createStageCommitment(
   stage: StageDef,
   runnerAgentId: string,
   runStartedAt: string,
+  mission: AgentMission = { ownerAgentId: runnerAgentId },
 ): Promise<CommitmentRow> {
+  const terms: { deliver: string; deadline: string; [key: string]: unknown } = {
+    deliver: stage.id,
+    run: runId,
+    deadline: deadlineFor(stage, runStartedAt),
+  };
+  if (stage.agent) {
+    terms.mission = stage.agent.mission;
+    terms.role = stage.agent.agentName;
+    if (stage.produces) terms.produces = stage.produces;
+    if (mission.callback) terms.callback = mission.callback;
+    if (mission.outputDir) terms.outputDir = mission.outputDir;
+  }
+
   const { commitment } = await createPromise(
     {
-      debtorAgentId: runnerAgentId,
+      debtorAgentId: mission.ownerAgentId,
       creditorAgentId: runnerAgentId,
-      terms: { deliver: stage.id, run: runId, deadline: deadlineFor(stage, runStartedAt) },
+      terms,
       idempotencyKey: `${runId}:${stage.id}:create-promise`,
     },
     pool,
@@ -86,7 +114,7 @@ export async function createStageCommitment(
       {
         commitmentId: commitment.id,
         action: 'activate',
-        actorId: runnerAgentId,
+        actorId: mission.ownerAgentId,
         expectedVersion: commitment.version,
         idempotencyKey: `${runId}:${stage.id}:activate`,
       },
@@ -173,7 +201,13 @@ function actionFor(outcome: Outcome, currentStatus: string): Action | null {
   }
 }
 
-/** Transition the stage's commitment per the outcome taxonomy. Idempotency key '<run>:<stage>:<action>'. */
+/**
+ * Transition the stage's commitment per the outcome taxonomy. Idempotency
+ * key '<run>:<stage>:<action>'. `ownerAgentId` (defaults to runnerAgentId
+ * for command stages) is the actor for fulfill/activate/break, since those
+ * require the debtor role and an agent stage's debtor is the owning agent,
+ * not the runner; revoke always uses runnerAgentId, the creditor role.
+ */
 export async function transitionStageCommitment(
   pool: Pool,
   runId: string,
@@ -182,6 +216,7 @@ export async function transitionStageCommitment(
   outcome: Outcome,
   runnerAgentId: string,
   reason?: string,
+  ownerAgentId: string = runnerAgentId,
 ): Promise<void> {
   const current = await getCommitment(commitmentId, pool);
   if (!current) throw new Error(`stage commitment vanished: ${commitmentId}`);
@@ -195,11 +230,13 @@ export async function transitionStageCommitment(
   const action = actionFor(outcome, current.status);
   if (!action) return;
 
+  const actorId = action === 'revoke' ? runnerAgentId : ownerAgentId;
+
   await transitionCommitment(
     {
       commitmentId,
       action,
-      actorId: runnerAgentId,
+      actorId,
       expectedVersion: current.version,
       idempotencyKey: `${runId}:${stage}:${action}`,
       reason,

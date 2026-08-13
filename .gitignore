@@ -4,3 +4,6 @@ dist/
 .env
 .DS_Store
 coverage/
+.styx-runs/
+.styx-agents/
+.styx-agents-scenes/

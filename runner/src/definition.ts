@@ -6,12 +6,22 @@
 import { readFileSync } from 'node:fs';
 import { load } from 'js-yaml';
 
+// Agent executor (Day 3): a stage names a fleet member (agentName, resolved
+// to a kernel agent id at run time) and a free-text mission. No command,
+// no prompt template, no model choice here -- those are the agent's own
+// business (agent/src/policies/*); the runner only needs to know who owns
+// the stage's delivery.
+export interface AgentStageDef {
+  agentName: string;
+  mission: string;
+}
+
 export interface StageDef {
   id: string;
   // Command executor: argv array is the direct-exec form, a string is run
-  // through a shell. Agent executor is Day 3; parsed but rejected below.
+  // through a shell. Exactly one of run/agent is required.
   run?: string | string[];
-  agent?: unknown;
+  agent?: AgentStageDef;
   needs?: string[];
   on_success?: string[];
   on_failure?: string;
@@ -125,12 +135,18 @@ export function validateDefinition(def: PipelineDef): ValidationResult {
   }
 
   for (const s of def.stages) {
-    if (s.agent !== undefined) {
-      errors.push(`stage '${s.id}': agent stages arrive on Day 3`);
-      continue;
-    }
-    if (s.run === undefined) {
-      errors.push(`stage '${s.id}': command stage requires 'run'`);
+    if (s.run !== undefined && s.agent !== undefined) {
+      errors.push(`stage '${s.id}': declares both 'run' and 'agent', a stage is exactly one executor`);
+    } else if (s.agent !== undefined) {
+      const a = s.agent as Partial<AgentStageDef>;
+      if (typeof a.agentName !== 'string' || a.agentName.length === 0) {
+        errors.push(`stage '${s.id}': agent stage requires 'agent.agentName'`);
+      }
+      if (typeof a.mission !== 'string' || a.mission.length === 0) {
+        errors.push(`stage '${s.id}': agent stage requires 'agent.mission'`);
+      }
+    } else if (s.run === undefined) {
+      errors.push(`stage '${s.id}': stage requires 'run' or 'agent'`);
     }
     for (const t of s.needs ?? []) {
       if (!ids.has(t)) errors.push(`stage '${s.id}': needs references unknown stage '${t}'`);

@@ -48,12 +48,20 @@ export type Event =
   | { type: 'run_started'; at: string }
   | { type: 'stage_started'; stage: string; at: string }
   | { type: 'stage_exited'; stage: string; code: number; at: string }
-  // Day 3 placeholder: agent stages are rejected at validate() today, so
-  // this never fires in the command-executor-only Day 2 runner. Wired in
-  // now so the event union does not need to change when it does.
-  // ponytail: no_signal/no_output nudge logic is agent-executor territory,
-  // deferred to Day 3; today done:false just settles failed.
-  | { type: 'stage_signalled'; stage: string; done: boolean; at: string }
+  // Agent executor settlement: the agent's HTTP callback to the engine
+  // (research/ao-pipelines.md's "ao pipeline done/fail" analogue). done:false
+  // is an explicit failure signal. done:true with the stage's `produces`
+  // unset is the whole contract (succeeded_unverified); with `produces` set,
+  // producesOk (a file-existence check the engine performs before
+  // dispatching this event, never trusted from the callback payload itself)
+  // decides succeeded vs no_output -- a claim is not evidence.
+  // ponytail: single-shot signal, no AO-style nudge-then-settle two-attempt
+  // dance; a fleet runner can add a nudge later if it earns its keep.
+  | { type: 'stage_signalled'; stage: string; done: boolean; producesOk?: boolean; at: string }
+  // Agent stage's timeout fired with no done/fail signal ever received:
+  // AO's `no_signal` (SessionGone / never-signalled), distinct from a
+  // command stage's `timed_out` (a process the engine itself can kill).
+  | { type: 'stage_agent_silent'; stage: string; at: string }
   | { type: 'stage_timed_out'; stage: string; at: string }
   | { type: 'stage_cancelled'; stage: string; at: string }
   // Added beyond the six events named in the brief: the only way a reservation
@@ -228,8 +236,19 @@ export function reduce(state: RunState, event: Event): ReduceResult {
 
     case 'stage_started': {
       const st = next.stages[event.stage];
-      st.status = 'running';
       st.startedAt = event.at;
+      // Command stages dispatch this synchronously as the very first thing
+      // spawnStage does, well before a process could exit, so it always
+      // lands on a 'running' (never terminal) stage. Agent stages spawn
+      // nothing: 'stage_started' is bookkeeping-only, fired from
+      // spawnAgentStage after the styx_reserve effect's own DB round trip,
+      // by which point a fast-settling agent's HTTP callback can already
+      // have driven this same stage to a terminal outcome via
+      // stage_signalled. A late, harmless timestamp update must never
+      // regress an already-settled stage back to 'running'.
+      if (!TERMINAL.has(st.status)) {
+        st.status = 'running';
+      }
       break;
     }
 
@@ -241,8 +260,27 @@ export function reduce(state: RunState, event: Event): ReduceResult {
     }
 
     case 'stage_signalled': {
-      const outcome: Outcome = event.done ? 'succeeded_unverified' : 'failed';
-      settleStage(next, event.stage, outcome, event.at, effects, event.done ? undefined : 'agent signalled failure');
+      const def = stageDef(next, event.stage);
+      let outcome: Outcome;
+      let reason: string | undefined;
+      if (!event.done) {
+        outcome = 'failed';
+        reason = 'agent signalled failure';
+      } else if (!def.produces) {
+        outcome = 'succeeded_unverified';
+      } else if (event.producesOk) {
+        outcome = 'succeeded';
+      } else {
+        outcome = 'no_output';
+        reason = `declared artifact '${def.produces}' missing or empty`;
+      }
+      settleStage(next, event.stage, outcome, event.at, effects, reason);
+      maybeFinish(next, effects);
+      break;
+    }
+
+    case 'stage_agent_silent': {
+      settleStage(next, event.stage, 'no_signal', event.at, effects, 'agent stage timed out with no done/fail signal');
       maybeFinish(next, effects);
       break;
     }

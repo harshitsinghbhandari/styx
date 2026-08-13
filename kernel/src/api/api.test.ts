@@ -170,6 +170,112 @@ describe('ResourceConflict shape', () => {
   });
 });
 
+describe('repair route', () => {
+  it('repairs an at_risk commitment once an ACTIVE replacement is replaces-linked, as kernel actor', async () => {
+    async function activePromise(deliver: string): Promise<{ id: string; version: number }> {
+      const createRes = await fetch(`${baseUrl}/v1/commitments`, {
+        method: 'POST',
+        headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({
+          debtorAgentId: agents.alice.id,
+          creditorAgentId: agents.bob.id,
+          terms: { deliver, deadline: '2099-01-01T00:00:00Z' },
+        }),
+      });
+      const created = await createRes.json();
+      const activateRes = await fetch(`${baseUrl}/v1/commitments/${created.commitment.id}/transitions`, {
+        method: 'POST',
+        headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ action: 'activate', expectedVersion: 1 }),
+      });
+      const activated = await activateRes.json();
+      return { id: activated.commitment.id, version: activated.commitment.version };
+    }
+
+    const p101 = await activePromise('schema migration');
+    const p102 = await activePromise('API endpoints');
+
+    await fetch(`${baseUrl}/v1/commitments/${p102.id}/dependencies`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ dependsOnId: p101.id }),
+    });
+
+    await fetch(`${baseUrl}/v1/commitments/${p101.id}/transitions`, {
+      method: 'POST',
+      headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+      body: JSON.stringify({ action: 'break', expectedVersion: p101.version }),
+    });
+
+    const p104 = await activePromise('schema migration v2');
+    await fetch(`${baseUrl}/v1/commitments/${p102.id}/dependencies`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ dependsOnId: p104.id, dependencyType: 'replaces' }),
+    });
+
+    const repairRes = await fetch(`${baseUrl}/v1/commitments/${p102.id}/repair`, {
+      method: 'POST',
+      headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+      body: JSON.stringify({ reason: 'replacement is live' }),
+    });
+    expect(repairRes.status).toBe(200);
+    const repaired = await repairRes.json();
+    expect(repaired.commitment.status).toBe('active');
+    expect(repaired.event.actor_agent_id).toBeNull();
+  });
+
+  it('422s when no ACTIVE replaces-linked commitment exists', async () => {
+    const createRes = await fetch(`${baseUrl}/v1/commitments`, {
+      method: 'POST',
+      headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+      body: JSON.stringify({
+        debtorAgentId: agents.alice.id,
+        creditorAgentId: agents.bob.id,
+        terms: { deliver: 'widget', deadline: '2099-01-01T00:00:00Z' },
+      }),
+    });
+    const created = await createRes.json();
+
+    const repairRes = await fetch(`${baseUrl}/v1/commitments/${created.commitment.id}/repair`, {
+      method: 'POST',
+      headers: { ...authHeaders(agents.alice.key), 'Idempotency-Key': randomUUID() },
+      body: JSON.stringify({}),
+    });
+    expect(repairRes.status).toBe(422);
+  });
+});
+
+describe('precedents route', () => {
+  it('records a precedent and it is findable via search', async () => {
+    const situation = `resource conflict on task:build-auth ${randomUUID()}`;
+    const recordRes = await fetch(`${baseUrl}/v1/precedents`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ situation, resolution: 'created a replacement task', outcome: { resolved: true } }),
+    });
+    expect(recordRes.status).toBe(201);
+
+    const searchRes = await fetch(`${baseUrl}/v1/precedents/search`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ situation, limit: 5 }),
+    });
+    expect(searchRes.status).toBe(200);
+    const results = await searchRes.json();
+    expect(Array.isArray(results)).toBe(true);
+  });
+
+  it('400s when situation or resolution is missing', async () => {
+    const res = await fetch(`${baseUrl}/v1/precedents`, {
+      method: 'POST',
+      headers: authHeaders(agents.alice.key),
+      body: JSON.stringify({ resolution: 'no situation given' }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('SSE', () => {
   it('delivers a transition within 2s', async () => {
     const createRes = await fetch(`${baseUrl}/v1/commitments`, {

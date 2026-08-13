@@ -8,7 +8,7 @@
 // Node's single-threaded event loop without an explicit lock, the same
 // guarantee AO gets from one goroutine owning the run map.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { dump } from 'js-yaml';
@@ -22,9 +22,15 @@ import {
   createStageCommitment,
   linkStageDependencies,
   reserveStage,
+  resolveAgentId,
   transitionStageCommitment,
 } from './styx.js';
 import { bootstrap } from './bootstrap.js';
+import { startCallbackServer, type CallbackServer } from './callback.js';
+
+// ponytail: fixed default, no per-role/per-mission override yet. Add one
+// if a scene ever needs an agent stage slower than a minute to settle.
+const DEFAULT_AGENT_TIMEOUT_S = 60;
 
 export interface EngineOptions {
   pool?: Pool;
@@ -56,10 +62,16 @@ export class Engine {
   // instance actually won the race is the one that settles it for real.
   private readonly disowned = new Set<string>();
   private readonly handles: Record<string, StageHandle> = {};
+  // Per-stage owning agent: the debtor of the stage's promise commitment.
+  // The runner agent itself for command stages; the mission's fleet member
+  // for agent stages. Resolved once, at commitment-creation time.
+  private readonly owners: Record<string, string> = {};
+  private callbackServer?: CallbackServer;
+  private callbackUrl?: string;
   private settledResolve!: (state: RunState) => void;
   private readonly settled: Promise<RunState>;
 
-  constructor(private readonly runId: string, private readonly rawDef: PipelineDef, opts: EngineOptions = {}) {
+  constructor(public readonly runId: string, private readonly rawDef: PipelineDef, opts: EngineOptions = {}) {
     this.pool = opts.pool ?? defaultPool;
     this.runsDir = opts.runsDir ?? path.join(process.cwd(), '.styx-runs');
     this.instanceId = opts.instanceId ?? randomUUID();
@@ -78,6 +90,11 @@ export class Engine {
     this.runnerAgentId = identity.runnerAgentId;
 
     await ensureStageResources(this.pool, this.runId, def, this.runnerAgentId);
+
+    if (def.stages.some((s) => s.agent)) {
+      this.callbackServer = await startCallbackServer(this, 0);
+      this.callbackUrl = this.callbackServer.url;
+    }
 
     this.state = initRunState(this.runId, def);
     this.writeRunFolder(def);
@@ -98,8 +115,14 @@ export class Engine {
   private writeRunFolder(def: PipelineDef): void {
     const dir = this.runDir();
     mkdirSync(path.join(dir, 'stage-logs'), { recursive: true });
+    mkdirSync(this.agentOutputDir(), { recursive: true });
     writeFileSync(path.join(dir, 'definition.yaml'), dump(def));
     this.writeProjection();
+  }
+
+  /** Where an agent stage must write its declared `produces` artifact. Mirrors AO's agent-outputs/<name> run-folder convention. */
+  private agentOutputDir(): string {
+    return path.join(this.runDir(), 'agent-outputs');
   }
 
   // run.json is a projection, rewritten whole, never read back as truth.
@@ -141,7 +164,18 @@ export class Engine {
   private async performStyxLinks(effects: Array<Extract<Effect, { type: 'styx_link' }>>): Promise<void> {
     for (const effect of effects) {
       const def = this.state.def.stages.find((s) => s.id === effect.stage)!;
-      const commitment = await createStageCommitment(this.pool, this.runId, def, this.runnerAgentId, this.runStartedAt);
+      const ownerAgentId = def.agent ? await resolveAgentId(this.pool, def.agent.agentName) : this.runnerAgentId;
+      this.owners[effect.stage] = ownerAgentId;
+
+      const mission = def.agent
+        ? {
+            ownerAgentId,
+            callback: this.callbackUrl ? `${this.callbackUrl}/v1/runs/${this.runId}/stages/${effect.stage}/signal` : undefined,
+            outputDir: this.agentOutputDir(),
+          }
+        : { ownerAgentId };
+
+      const commitment = await createStageCommitment(this.pool, this.runId, def, this.runnerAgentId, this.runStartedAt, mission);
       this.commitmentIds[effect.stage] = commitment.id;
     }
     for (const effect of effects) {
@@ -176,7 +210,12 @@ export class Engine {
 
       case 'start_stage': {
         if (this.disowned.has(effect.stage)) return; // the paired styx_reserve above already routed this to skipped
-        this.spawnStage(effect.stage);
+        const def = this.state.def.stages.find((s) => s.id === effect.stage)!;
+        if (def.agent) {
+          this.spawnAgentStage(effect.stage);
+        } else {
+          this.spawnStage(effect.stage);
+        }
         break;
       }
 
@@ -198,6 +237,7 @@ export class Engine {
           effect.outcome,
           this.runnerAgentId,
           this.state.stages[effect.stage].reason,
+          this.owners[effect.stage],
         );
         break;
       }
@@ -205,6 +245,7 @@ export class Engine {
       case 'finish_run': {
         this.writeProjection();
         this.settledResolve(this.state);
+        void this.callbackServer?.close();
         break;
       }
 
@@ -242,6 +283,69 @@ export class Engine {
         : { type: 'stage_exited', stage, code: code ?? 1, at: this.clock() };
       this.dispatch(event).catch((err) => this.onDispatchError(stage, err));
     });
+  }
+
+  /**
+   * Agent stages spawn nothing: the mission's owning agent discovers its
+   * obligation via the kernel (the stage's promise commitment, already
+   * created and activated by performStyxLinks before this effect runs) and
+   * settles itself through the HTTP callback (signalStage below). All this
+   * does is start the run's own version of AO's SessionGone timeout: if no
+   * signal arrives before the deadline, the stage settles no_signal.
+   */
+  private spawnAgentStage(stage: string): void {
+    const def = this.state.def.stages.find((s) => s.id === stage)!;
+    const handle: StageHandle = { killed: false };
+    this.handles[stage] = handle;
+
+    const timeoutS = def.timeout_s ?? DEFAULT_AGENT_TIMEOUT_S;
+    handle.timer = setTimeout(() => {
+      this.dispatch({ type: 'stage_agent_silent', stage, at: this.clock() }).catch((err) => this.onDispatchError(stage, err));
+    }, timeoutS * 1000);
+
+    this.dispatch({ type: 'stage_started', stage, at: this.clock() }).catch((err) => this.onDispatchError(stage, err));
+  }
+
+  /**
+   * The engine's half of the agent's done/fail callback. Verifies rather
+   * than trusts: `done` is the agent's claim, producesOk (computed here
+   * from the filesystem, never taken from the request body) is the
+   * evidence. Silently ignores a signal for a stage that is not currently
+   * running -- unknown stage, already-settled stage, or a duplicate/late
+   * retry of a signal already processed -- so the callback is safe to
+   * retry from the agent side.
+   */
+  async signalStage(stage: string, payload: { done: boolean; reason?: string }): Promise<void> {
+    if (this.disowned.has(stage)) return;
+    const st = this.state.stages[stage];
+    if (!st || st.status !== 'running') return;
+    // The reducer flips a root stage to 'running' synchronously at
+    // run_started, before performStyxLinks (async, awaits the kernel) has
+    // actually created its commitment. A real agent can never observe this
+    // window -- it only learns to call back at all by reading terms.callback
+    // off a commitment that, by definition, already exists -- but guard it
+    // anyway rather than crash transitionStageCommitment with an undefined id.
+    if (!this.commitmentIds[stage]) return;
+    const def = this.state.def.stages.find((s) => s.id === stage);
+    if (!def?.agent) return; // signal against a command stage: not this executor's business
+
+    let producesOk: boolean | undefined;
+    if (def.produces) {
+      const filePath = path.join(this.agentOutputDir(), def.produces);
+      producesOk = existsSync(filePath) && statSync(filePath).size > 0;
+    }
+
+    await this.dispatch({ type: 'stage_signalled', stage, done: payload.done, producesOk, at: this.clock() });
+  }
+
+  /** Closes the callback server, if one was started. Idempotent; safe to call after the run has already settled. */
+  async close(): Promise<void> {
+    await this.callbackServer?.close();
+  }
+
+  /** The base URL agent-stage signals POST to, once the run has started; undefined for a run with no agent stages, or before start() reaches that point. */
+  callbackAddress(): string | undefined {
+    return this.callbackUrl;
   }
 
   private onDispatchError(stage: string, err: unknown): void {
