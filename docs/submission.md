@@ -149,8 +149,7 @@ http://styx-alb-2003374125.us-east-1.elb.amazonaws.com/
 
 ## Repo URL
 
-placeholder, filled in after the public GitHub repo is created (see step
-7 of the packaging pass)
+https://github.com/harshitsinghbhandari/styx
 
 ## Video URL
 

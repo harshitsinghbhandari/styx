@@ -186,7 +186,7 @@ deploy, all idempotent, safe to re-run.
 Verified from a fresh clone. All commands from the repo root unless noted.
 
 ```bash
-git clone <repo-url> styx && cd styx
+git clone https://github.com/harshitsinghbhandari/styx.git && cd styx
 npm install
 ```
 
