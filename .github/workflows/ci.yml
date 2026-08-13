@@ -1,0 +1,33 @@
+name: kernel tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: start single-node cockroach
+        run: |
+          docker run -d --name styx-crdb --network host cockroachdb/cockroach:latest \
+            start-single-node --insecure --listen-addr=localhost:26257
+          for i in $(seq 1 30); do
+            docker exec styx-crdb ./cockroach sql --insecure -e "SELECT 1" && break
+            sleep 2
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install
+        run: npm install
+
+      - name: test kernel
+        env:
+          DATABASE_URL: postgresql://root@localhost:26257/styx?sslmode=disable
+          DATABASE_ADMIN_URL: postgresql://root@localhost:26257/defaultdb?sslmode=disable
+        run: npm run test:kernel
